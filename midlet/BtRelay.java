@@ -921,6 +921,13 @@ public class BtRelay extends MIDlet implements CommandListener {
         }
 
         private void handleKey(int k, boolean rep) {
+            // Centre key of the D-pad: -5 on Nokia, 10/13 on some other phones.
+            if (k == -5 || k == 10 || k == 13) {
+                if (!rep) {
+                    openSel();
+                }
+                return;
+            }
             int rows = rows();
             int total = lines.size();
             int maxTop = Math.max(0, total - rows);
