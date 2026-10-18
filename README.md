@@ -12,11 +12,12 @@ Limits: text only (no images, no JavaScript, no forms/login yet). It is a small 
 
 | Key | Action |
 |---|---|
-| Up / Down | scroll one line (hold = faster) |
+| Up / Down | select previous / next link (scrolls when no link is in view; hold = scroll faster) |
+| Select | open the selected (highlighted) link |
 | 2 / 8 | page up / down |
 | 4 / 6 or Left / Right | fast jump (10% of the page) |
 | 1 / 7 | top / bottom |
-| 5 or Select | list of links on the page |
+| 5 | list of all links on the page |
 | 3 | go to address |
 | 9 | search (DuckDuckGo Lite) |
 | * | back |
