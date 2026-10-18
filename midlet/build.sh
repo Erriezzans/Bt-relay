@@ -6,19 +6,44 @@ cd "$(dirname "$0")"
 mkdir -p lib build/classes build/out dist
 rm -rf build/classes/* build/out/* build/raw.jar build/pg.jar dist/*
 
-M=https://repo1.maven.org/maven2/org/microemu
-[ -f lib/microemu-cldc.jar ]   || curl -fsSL -o lib/microemu-cldc.jar   $M/microemu-cldc/2.0.4/microemu-cldc-2.0.4.jar
-[ -f lib/microemu-midp.jar ]   || curl -fsSL -o lib/microemu-midp.jar   $M/microemu-midp/2.0.4/microemu-midp-2.0.4.jar
-[ -f lib/microemu-jsr-82.jar ] || curl -fsSL -o lib/microemu-jsr-82.jar $M/microemu-jsr-82/2.0.4/microemu-jsr-82-2.0.4.jar
+# fetch <file> <url> [fallback urls...]  -> tries each url until one works
+fetch() {
+  out="$1"; shift
+  [ -s "$out" ] && return 0
+  for u in "$@"; do
+    if curl -fsSL -o "$out" "$u"; then echo "OK   $out <- $u"; return 0; fi
+    echo "FAIL $u"
+  done
+  rm -f "$out"
+  echo "Could not download $out" >&2
+  return 1
+}
+
+C=https://repo1.maven.org/maven2
+fetch lib/cldc.jar  $C/org/microemu/microemu-cldc/2.0.4/microemu-cldc-2.0.4.jar \
+                    $C/org/microemu/microemu-cldc/2.0.3/microemu-cldc-2.0.3.jar
+fetch lib/midp.jar  $C/org/microemu/microemu-midp/2.0.4/microemu-midp-2.0.4.jar \
+                    $C/org/microemu/microemu-midp/2.0.3/microemu-midp-2.0.3.jar
+fetch lib/jsr82.jar $C/org/microemu/microemu-jsr-82/2.0.4/microemu-jsr-82-2.0.4.jar \
+                    $C/net/sf/bluecove/bluecove/2.1.0/bluecove-2.1.0.jar \
+                    $C/net/sf/bluecove/bluecove/2.1.1/bluecove-2.1.1.jar
+
 if [ ! -f lib/proguard.jar ]; then
-  curl -fsSL -o build/pg.zip https://github.com/Guardsquare/proguard/releases/download/v7.5.0/proguard-7.5.0.zip
-  unzip -q -j build/pg.zip 'proguard-7.5.0/lib/proguard.jar' -d lib
-  rm build/pg.zip
+  for v in 7.5.0 7.4.2 7.3.2; do
+    if curl -fsSL -o build/pg.zip "https://github.com/Guardsquare/proguard/releases/download/v$v/proguard-$v.zip"; then
+      unzip -q -j build/pg.zip "proguard-$v/lib/proguard.jar" -d lib
+      rm -f build/pg.zip
+      echo "OK   lib/proguard.jar (ProGuard $v)"
+      break
+    fi
+    echo "FAIL ProGuard $v"
+  done
 fi
+[ -f lib/proguard.jar ] || { echo "ProGuard download failed" >&2; exit 1; }
 
 # 1. compile against the CLDC/MIDP/JSR-82 stubs
 javac --release 8 -Xlint:-options \
-  -cp "lib/microemu-cldc.jar:lib/microemu-midp.jar:lib/microemu-jsr-82.jar" \
+  -cp "lib/cldc.jar:lib/midp.jar:lib/jsr82.jar" \
   -d build/classes BtRelay.java
 jar cf build/raw.jar -C build/classes .
 
