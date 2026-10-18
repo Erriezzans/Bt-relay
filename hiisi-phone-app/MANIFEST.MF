@@ -1,0 +1,10 @@
+MIDlet-1: Hiisi Proxy, /Hiisi.png, Hiisi.HiisiMIDlet
+MIDlet-Icon: /Hiisi.png
+MIDlet-Name: Hiisi Proxy
+MIDlet-Permissions: javax.microedition.io.Connector.bluetooth.client,j
+ avax.microedition.io.Connector.http,javax.microedition.io.Connector.s
+ ocket,javax.microedition.io.Connector.serversocket
+MIDlet-Vendor: Unknown
+MIDlet-Version: 1.6.3
+MicroEdition-Configuration: CLDC-1.1
+MicroEdition-Profile: MIDP-2.0

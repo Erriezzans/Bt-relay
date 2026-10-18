@@ -1,0 +1,16 @@
+Default-Device: 000000000000
+Filter: http://localhost/pc2m/index.php
+MIDlet-1: Hiisi Proxy, /Hiisi.png, Hiisi.HiisiMIDlet
+MIDlet-Icon: /Hiisi.png
+MIDlet-Jar-Size: 28786
+MIDlet-Jar-URL: Hiisi.jar
+MIDlet-Name: Hiisi Proxy
+MIDlet-Permissions: javax.microedition.io.Connector.bluetooth.client,javax.microedition.io.Connector.http,javax.microedition.io.Connector.socket,javax.microedition.io.Connector.serversocket
+MIDlet-Vendor: Unknown
+MIDlet-Version: 1.6.3
+MicroEdition-Configuration: CLDC-1.1
+MicroEdition-Profile: MIDP-2.0
+User-Agent: SoftBank/1.0/705NK/NKJ001 Series60/3.0 NokiaN73/3.0650 Profile/MIDP-2.0 Configuration/CLDC-1.1
+User-Agent2: Mozilla/5.0 (SymbianOS/9.1; U; en-us) AppleWebKit/413 (KHTML, like Gecko) Safari/413
+User-Agent3: Browser/x.x
+x-wap-profile: "http://nds1.nds.nokia.com/uaprof/NN73-1r100-SB3G.xml"
