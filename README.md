@@ -6,7 +6,25 @@ Bluetooth "hotspot" for old Nokia phones. An Android phone with internet acts as
 Nokia MIDlet  --Bluetooth (RFCOMM)-->  Android app  --Wi-Fi/4G-->  Internet
 ```
 
-Limits: text only (no images, no scripts). It is a small browser, not a full network connection. HTTPS sites work because the Android phone does the fetching.
+Limits: text only (no images, no JavaScript, no forms/login yet). It is a small browser inside the Nokia app, not a system-wide connection. HTTPS sites work because the Android phone does the fetching.
+
+## Keys on the Nokia
+
+| Key | Action |
+|---|---|
+| Up / Down | scroll one line (hold = faster) |
+| 2 / 8 | page up / down |
+| 4 / 6 or Left / Right | fast jump (10% of the page) |
+| 1 / 7 | top / bottom |
+| 5 or Select | list of links on the page |
+| 3 | go to address |
+| 9 | search (DuckDuckGo Lite) |
+| * | back |
+| # | reload |
+| 0 | home / help |
+| Left softkey | Options menu (same actions + Settings) |
+
+Settings: text size, dark/light theme, page size (8k to 100k characters), home page.
 
 ## Get the apps (built by GitHub)
 
