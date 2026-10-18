@@ -12,6 +12,14 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
+import android.webkit.ValueCallback;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -22,14 +30,21 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.CookieHandler;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.json.JSONTokener;
 
 /**
  * Bt-relay server: waits for a Bluetooth serial connection from a Nokia phone,
@@ -51,7 +66,25 @@ public class MainActivity extends Activity {
     static final String UA =
             "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 Chrome/100 Mobile Safari/537.36";
 
+    static final String NO_TEXT =
+            "(No readable text on this page. It may need JavaScript or a login.)";
+
+    // Runs inside the hidden WebView after the page has loaded: numbers the links
+    // like the static converter does and returns the visible text as JSON.
+    static final String EXTRACT_JS =
+            "(function(){var L=[],as=document.querySelectorAll('a[href]');"
+            + "for(var i=0;i<as.length&&L.length<" + MAX_LINKS + ";i++){var a=as[i];"
+            + "var t=(a.innerText||a.textContent||'').replace(/\\s+/g,' ').trim();"
+            + "var r=a.getAttribute('href')||'',h=a.href||'';"
+            + "if(!t||!h||r.charAt(0)==='#'||/^(javascript:|mailto:|tel:|data:)/i.test(h))continue;"
+            + "L.push([t,h]);a.appendChild(document.createTextNode('['+L.length+']'));}"
+            + "return JSON.stringify({title:document.title||'',url:location.href,"
+            + "text:document.body?document.body.innerText:'',links:L});})()";
+
     private TextView logView;
+    private WebView web;
+    private final Object webLock = new Object();
+    private volatile boolean alwaysRender = false;
     private ScrollView scroll;
     private BluetoothServerSocket server;
     private volatile boolean running = false;
@@ -60,6 +93,9 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        // Keep cookies between requests (consent banners, sessions, redirects).
+        CookieHandler.setDefault(new java.net.CookieManager());
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -78,12 +114,28 @@ public class MainActivity extends Activity {
             public void onClick(View v) { stopRelay(); }
         });
 
+        CheckBox render = new CheckBox(this);
+        render.setText("Render pages with JavaScript (slower)");
+        render.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton v, boolean on) { alwaysRender = on; }
+        });
+
+        // Hidden 1x1 WebView used to render JavaScript pages for the Nokia.
+        web = new WebView(this);
+        WebSettings ws = web.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(true);
+        ws.setUserAgentString(UA);
+        ws.setBlockNetworkImage(true);
+
         logView = new TextView(this);
         scroll = new ScrollView(this);
         scroll.addView(logView);
 
         root.addView(start);
         root.addView(stop);
+        root.addView(render);
+        root.addView(web, new LinearLayout.LayoutParams(1, 1));
         root.addView(scroll);
         setContentView(root);
 
@@ -186,6 +238,10 @@ public class MainActivity extends Activity {
     private String fetch(String url, int max) {
         if (url.length() == 0) return reply("Error", "", "Empty request", null);
         if (!url.matches("(?i)^https?://.*")) url = "http://" + url;
+        if (alwaysRender) {
+            String w = renderWeb(url, max);
+            if (w != null) return w;
+        }
         try {
             HttpURLConnection c = null;
             String cur = url;
@@ -230,7 +286,13 @@ public class MainActivity extends Activity {
             if (!html) {
                 return reply(cur, cur, cut(s.replace("\r", ""), max), null);
             }
-            return htmlToReply(s, cur, max, code);
+            String r = htmlToReply(s, cur, max, code);
+            if (!alwaysRender && r.contains(NO_TEXT)) {
+                // The plain converter found nothing: the page probably needs JavaScript.
+                String w = renderWeb(cur, max);
+                if (w != null) return w;
+            }
+            return r;
         } catch (Exception e) {
             return reply("Error", url, "Error: " + e, null);
         }
@@ -247,6 +309,93 @@ public class MainActivity extends Activity {
             if (m.find()) return Charset.forName(m.group(1));
         } catch (Exception ignored) {}
         return Charset.forName("UTF-8");
+    }
+
+    // ---------------------------------------------------------------- WebView
+
+    /** Loads the page in the hidden WebView, waits for scripts to settle, returns a reply or null. */
+    private String renderWeb(final String url, final int max) {
+        synchronized (webLock) {
+            log("Rendering with WebView: " + url);
+            final CountDownLatch done = new CountDownLatch(1);
+            final String[] raw = new String[1];
+            final int[] seq = new int[1];
+
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    web.stopLoading();
+                    web.setWebViewClient(new WebViewClient() {
+                        @Override
+                        public void onPageFinished(final WebView v, String u) {
+                            // Redirects fire this several times: only the last one extracts.
+                            final int my = ++seq[0];
+                            v.postDelayed(new Runnable() {
+                                public void run() {
+                                    if (my != seq[0] || done.getCount() == 0) return;
+                                    v.evaluateJavascript(EXTRACT_JS, new ValueCallback<String>() {
+                                        public void onReceiveValue(String value) {
+                                            raw[0] = value;
+                                            done.countDown();
+                                        }
+                                    });
+                                }
+                            }, 1500);
+                        }
+
+                        @Override
+                        public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
+                            if (r.isForMainFrame()) done.countDown(); // give up, fall back to plain fetch
+                        }
+                    });
+                    web.loadUrl(url);
+                }
+            });
+
+            boolean ok = false;
+            try { ok = done.await(30, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    web.setWebViewClient(new WebViewClient());
+                    web.loadUrl("about:blank");
+                }
+            });
+            if (!ok || raw[0] == null) return null;
+
+            try {
+                Object o = new JSONTokener(raw[0]).nextValue();
+                if (!(o instanceof String)) return null;
+                JSONObject j = new JSONObject((String) o);
+                String title = j.optString("title", "").trim();
+                String finalUrl = j.optString("url", url);
+                String text = j.optString("text", "")
+                        .replace("\r", "").replace('\u00a0', ' ').replace("\u0001", " ")
+                        .replaceAll("[ \\t]+", " ")
+                        .replaceAll("(?m)^ +| +$", "")
+                        .replaceAll("\\n{3,}", "\n\n")
+                        .trim();
+                if (text.length() == 0) return null;
+
+                List<String[]> links = new ArrayList<String[]>();
+                JSONArray la = j.optJSONArray("links");
+                if (la != null) {
+                    for (int i = 0; i < la.length(); i++) {
+                        JSONArray l = la.getJSONArray(i);
+                        links.add(new String[]{l.getString(0), l.getString(1)});
+                    }
+                }
+                text = cut(text, max);
+                int keep = links.size();
+                while (keep > 0 && !text.contains("[" + keep + "]")) keep--;
+                links = new ArrayList<String[]>(links.subList(0, keep));
+
+                if (title.length() == 0) title = finalUrl;
+                return reply(title, finalUrl, text, links);
+            } catch (Exception e) {
+                log("WebView parse error: " + e);
+                return null;
+            }
+        }
     }
 
     // ------------------------------------------------------------------- HTML
@@ -302,7 +451,7 @@ public class MainActivity extends Activity {
                 .replaceAll("\\n{3,}", "\n\n")
                 .trim();
 
-        if (h.length() == 0) h = "(No readable text on this page. It may need JavaScript or a login.)";
+        if (h.length() == 0) h = NO_TEXT;
         h = cut(h, max);
 
         // drop links that were cut off
