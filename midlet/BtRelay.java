@@ -45,11 +45,12 @@ public class BtRelay extends MIDlet implements CommandListener {
     private static final String HELP =
             "Bt-relay browser\n\n"
             + "KEYS\n"
-            + "Up/Down: scroll line\n"
+            + "Up/Down: move between links (scrolls when none)\n"
+            + "Select: open the selected link\n"
             + "2 / 8: page up / down\n"
             + "4 / 6 or Left/Right: fast jump (10%)\n"
             + "1 / 7: top / bottom\n"
-            + "5 or Select: list of links\n"
+            + "5: list of all links\n"
             + "3: go to address\n"
             + "9: search\n"
             + "*: back\n"
@@ -518,6 +519,12 @@ public class BtRelay extends MIDlet implements CommandListener {
         private int bg;
         private int barBg;
         private int barFg;
+        private int linkFg;
+        private int selBg;
+        private int selFg;
+        private Vector marks = new Vector();   // int[]{line, start, end, linkNo}
+        private int[] linkLine = new int[1];   // linkNo -> line index, -1 if not found
+        private int sel = -1;                  // selected link number (1-based), -1 = none
         private String title = "";
         private String raw = "";
         private String status = null;
@@ -536,11 +543,17 @@ public class BtRelay extends MIDlet implements CommandListener {
                 fg = 0xE8E8E8;
                 barBg = 0x2A3A66;
                 barFg = 0xFFFFFF;
+                linkFg = 0x66B3FF;
+                selBg = 0xFFD84A;
+                selFg = 0x000000;
             } else {
                 bg = 0xFFFFFF;
                 fg = 0x101010;
                 barBg = 0x3355AA;
                 barFg = 0xFFFFFF;
+                linkFg = 0x0033CC;
+                selBg = 0x0033CC;
+                selFg = 0xFFFFFF;
             }
             lastW = -1;
             repaint();
@@ -551,6 +564,9 @@ public class BtRelay extends MIDlet implements CommandListener {
             raw = body;
             status = null;
             top = 0;
+            sel = -1;
+            marks = new Vector();
+            linkLine = new int[1];
             lastW = -1;
             repaint();
         }
@@ -569,6 +585,175 @@ public class BtRelay extends MIDlet implements CommandListener {
 
         private void rewrap() {
             lines = wrap(raw, getWidth() - SB_W - 4);
+            buildMarks();
+        }
+
+        // Finds the "label[n]" link markers in the wrapped lines (numbers must come in order).
+        private void buildMarks() {
+            Vector lk = links;
+            int nl = lk.size();
+            Vector m = new Vector();
+            int[] ll = new int[nl + 1];
+            for (int i = 0; i < ll.length; i++) {
+                ll[i] = -1;
+            }
+            int next = 1;
+            for (int li = 0; li < lines.size() && next <= nl; li++) {
+                String s = (String) lines.elementAt(li);
+                int pos = 0;
+                while (next <= nl) {
+                    int a = s.indexOf('[', pos);
+                    if (a < 0) {
+                        break;
+                    }
+                    int b = a + 1;
+                    int num = 0;
+                    while (b < s.length() && b - a <= 5 && s.charAt(b) >= '0' && s.charAt(b) <= '9') {
+                        num = num * 10 + (s.charAt(b) - '0');
+                        b++;
+                    }
+                    if (b < s.length() && s.charAt(b) == ']' && b > a + 1
+                            && num >= next && num <= next + 3 && num <= nl) {
+                        String label = ((String[]) lk.elementAt(num - 1))[0];
+                        int st = a - label.length();
+                        if (st < 0 || !s.substring(st, a).equals(label)) {
+                            // label wrapped or differs: colour only the last word
+                            st = a;
+                            while (st > 0 && s.charAt(st - 1) != ' ') {
+                                st--;
+                            }
+                        }
+                        ll[num] = li;
+                        m.addElement(new int[]{li, st, b + 1, num});
+                        next = num + 1;
+                        pos = b + 1;
+                    } else {
+                        pos = a + 1;
+                    }
+                }
+            }
+            linkLine = ll;
+            marks = m;
+        }
+
+        private boolean visible(int line) {
+            return line >= top && line < top + rows();
+        }
+
+        // Keeps the selection on a link that is on screen (or none).
+        private void fixSel(int dir) {
+            int nl = linkLine.length - 1;
+            if (sel >= 1 && sel <= nl && linkLine[sel] >= 0 && visible(linkLine[sel])) {
+                return;
+            }
+            sel = -1;
+            if (dir >= 0) {
+                for (int i = 1; i <= nl; i++) {
+                    if (linkLine[i] >= 0 && visible(linkLine[i])) {
+                        sel = i;
+                        return;
+                    }
+                }
+            } else {
+                for (int i = nl; i >= 1; i--) {
+                    if (linkLine[i] >= 0 && visible(linkLine[i])) {
+                        sel = i;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Up/Down: go to the next/previous link; if it is off screen, scroll one line.
+        private void moveSel(int dir) {
+            int nl = linkLine.length - 1;
+            int rows = rows();
+            int base = sel;
+            if (base < 1) {
+                base = dir > 0 ? 0 : nl + 1;
+                for (int i = 1; i <= nl; i++) {
+                    int ln = linkLine[i];
+                    if (ln < 0) {
+                        continue;
+                    }
+                    if (dir > 0 && ln < top) {
+                        base = i;
+                    }
+                    if (dir < 0 && ln >= top + rows && base == nl + 1) {
+                        base = i;
+                    }
+                }
+            }
+            int cand = -1;
+            for (int i = base + dir; i >= 1 && i <= nl; i += dir) {
+                if (linkLine[i] >= 0) {
+                    cand = i;
+                    break;
+                }
+            }
+            if (cand > 0 && visible(linkLine[cand])) {
+                sel = cand;
+                return;
+            }
+            int maxTop = Math.max(0, lines.size() - rows);
+            top += dir;
+            if (top > maxTop) {
+                top = maxTop;
+            }
+            if (top < 0) {
+                top = 0;
+            }
+            if (cand > 0 && visible(linkLine[cand])) {
+                sel = cand;
+            } else {
+                fixSel(dir);
+            }
+        }
+
+        private void openSel() {
+            if (sel >= 1 && sel <= links.size()) {
+                String[] l = (String[]) links.elementAt(sel - 1);
+                load(l[1], true);
+            } else {
+                showLinks();
+            }
+        }
+
+        private void drawLine(Graphics g, String s, int li, int y) {
+            int x = 2;
+            int pos = 0;
+            int fh = font.getHeight();
+            for (int m = 0; m < marks.size(); m++) {
+                int[] mk = (int[]) marks.elementAt(m);
+                if (mk[0] != li) {
+                    continue;
+                }
+                int st = Math.max(mk[1], pos);
+                if (st > pos) {
+                    String pre = s.substring(pos, st);
+                    g.setColor(fg);
+                    g.drawString(pre, x, y, Graphics.TOP | Graphics.LEFT);
+                    x += font.stringWidth(pre);
+                }
+                String seg = s.substring(st, mk[2]);
+                int sw = font.stringWidth(seg);
+                if (mk[3] == sel) {
+                    g.setColor(selBg);
+                    g.fillRect(x - 1, y, sw + 2, fh);
+                    g.setColor(selFg);
+                    g.drawString(seg, x, y, Graphics.TOP | Graphics.LEFT);
+                } else {
+                    g.setColor(linkFg);
+                    g.drawString(seg, x, y, Graphics.TOP | Graphics.LEFT);
+                    g.drawLine(x, y + fh - 1, x + sw, y + fh - 1);
+                }
+                x += sw;
+                pos = mk[2];
+            }
+            if (pos < s.length()) {
+                g.setColor(fg);
+                g.drawString(s.substring(pos), x, y, Graphics.TOP | Graphics.LEFT);
+            }
         }
 
         private Vector wrap(String text, int maxW) {
@@ -686,6 +871,7 @@ public class BtRelay extends MIDlet implements CommandListener {
             if (top < 0) {
                 top = 0;
             }
+            fixSel(1);
 
             g.setColor(bg);
             g.fillRect(0, 0, w, h);
@@ -713,8 +899,7 @@ public class BtRelay extends MIDlet implements CommandListener {
             g.setClip(0, areaTop, w, areaH);
             g.setColor(fg);
             for (int i = 0; i < rows && top + i < ls.size(); i++) {
-                g.drawString((String) ls.elementAt(top + i), 2, areaTop + i * lh,
-                        Graphics.TOP | Graphics.LEFT);
+                drawLine(g, (String) ls.elementAt(top + i), top + i, areaTop + i * lh);
             }
             if (ls.size() > rows) {
                 int thumbH = Math.max(8, areaH * rows / ls.size());
@@ -799,16 +984,28 @@ public class BtRelay extends MIDlet implements CommandListener {
                         return;
                     }
                     if (a == UP) {
-                        top -= step;
+                        if (rep) {
+                            top -= step;
+                        } else {
+                            moveSel(-1);
+                            repaint();
+                            return;
+                        }
                     } else if (a == DOWN) {
-                        top += step;
+                        if (rep) {
+                            top += step;
+                        } else {
+                            moveSel(1);
+                            repaint();
+                            return;
+                        }
                     } else if (a == LEFT) {
                         top -= quarter;
                     } else if (a == RIGHT) {
                         top += quarter;
                     } else if (a == FIRE) {
                         if (!rep) {
-                            showLinks();
+                            openSel();
                         }
                         return;
                     } else {
