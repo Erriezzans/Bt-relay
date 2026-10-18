@@ -1,6 +1,6 @@
 # Bt-relay
 
-Bluetooth "hotspot" for old Nokia phones. An Android phone with internet acts as the relay; a Nokia (tested target: C5-00) sends it URLs over Bluetooth and gets the page back as plain text.
+Bluetooth "hotspot" for old Nokia phones. An Android phone with internet acts as the relay; a Nokia (target: C5-00) sends it URLs over Bluetooth and gets the page back as plain text.
 
 ```
 Nokia MIDlet  --Bluetooth (RFCOMM)-->  Android app  --Wi-Fi/4G-->  Internet
@@ -8,48 +8,24 @@ Nokia MIDlet  --Bluetooth (RFCOMM)-->  Android app  --Wi-Fi/4G-->  Internet
 
 Limits: text only (no images, no scripts). It is a small browser, not a full network connection. HTTPS sites work because the Android phone does the fetching.
 
-## 1. Android app (`android/`)
+## Get the apps (built by GitHub)
 
-1. Android Studio -> New Project -> "Empty Views Activity", Java, package `com.erriezzans.btrelay`.
-2. Replace `MainActivity.java` with the one in `android/`.
-3. Add to `AndroidManifest.xml`, above `<application>`:
+1. Push to GitHub, open the **Actions** tab, open the latest **Build** run.
+2. Download the artifacts at the bottom:
+   - `BtRelay-apk` -> contains `app-debug.apk` (install on Android)
+   - `BtRelay-midlet` -> contains `BtRelay.jar` and `BtRelay.jad` (install on the Nokia)
 
-```xml
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
-<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-<uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
-```
+## Build locally instead
 
-4. Run on the phone, allow the permissions, tap **Start relay**, accept "make discoverable".
+- Android: `cd android && gradle assembleDebug` (needs Android SDK, JDK 17, Gradle 8.7)
+- MIDlet: `bash midlet/build.sh` (needs JDK 11+, curl, unzip; output in `midlet/dist/`)
 
-## 2. Nokia MIDlet (`midlet/`)
+## Use it
 
-1. Build with NetBeans + Java ME SDK, or Eclipse + EclipseME, or Sun WTK 2.5.2.
-   Configuration: **CLDC-1.1**, profile: **MIDP-2.1** (or 2.0), with **JSR-82** (Bluetooth).
-2. Make sure the JAD / manifest contains:
-
-```
-MIDlet-Name: Bt-relay
-MIDlet-Vendor: Erriezzans
-MIDlet-Version: 1.0.0
-MIDlet-1: Bt-relay,,BtRelay
-MicroEdition-Configuration: CLDC-1.1
-MicroEdition-Profile: MIDP-2.0
-MIDlet-Permissions: javax.microedition.io.Connector.bluetooth.client
-```
-
-3. Copy the `.jar` to the C5 and install it.
-4. On the C5: Applications -> highlight Bt-relay -> Options -> Suite settings -> **Bluetooth: Ask every time**.
-
-## 3. Use it
-
-1. Android: Bluetooth on, relay started, discoverable.
-2. Nokia: open Bt-relay, type a URL, press **Go**.
-3. First time only: accept the pairing request on both phones (same PIN).
+1. Android: install the APK, allow permissions, tap **Start relay**, accept "make discoverable".
+2. Nokia: install `BtRelay.jar`, then Applications -> Bt-relay -> Options -> Suite settings -> **Bluetooth: Ask every time**.
+3. Open Bt-relay on the Nokia, type a URL, press **Go**.
+4. First time only: accept the pairing request on both phones.
 
 ## Protocol
 

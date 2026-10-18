@@ -87,7 +87,7 @@ public class BtRelay extends MIDlet implements CommandListener {
             conn = (StreamConnection) Connector.open(connUrl);
 
             OutputStream os = conn.openOutputStream();
-            os.write((url + "\n").getBytes("UTF-8"));
+            os.write(url.concat("\n").getBytes("UTF-8"));
             os.flush();
 
             show("Loading...");
@@ -100,7 +100,7 @@ public class BtRelay extends MIDlet implements CommandListener {
             }
             show(new String(bo.toByteArray(), "UTF-8"));
         } catch (Throwable t) {
-            show("Error: " + t.toString());
+            show("Error: ".concat(String.valueOf(t)));
         } finally {
             if (conn != null) {
                 try {

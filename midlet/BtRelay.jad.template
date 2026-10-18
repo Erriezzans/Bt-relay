@@ -1,0 +1,9 @@
+MIDlet-Name: Bt-relay
+MIDlet-Vendor: Erriezzans
+MIDlet-Version: 1.0.0
+MIDlet-1: Bt-relay,,BtRelay
+MIDlet-Jar-URL: BtRelay.jar
+MIDlet-Jar-Size: @SIZE@
+MicroEdition-Configuration: CLDC-1.1
+MicroEdition-Profile: MIDP-2.0
+MIDlet-Permissions: javax.microedition.io.Connector.bluetooth.client
