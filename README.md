@@ -6,7 +6,7 @@ Bluetooth "hotspot" for old Nokia phones. An Android phone with internet acts as
 Nokia MIDlet  --Bluetooth (RFCOMM)-->  Android app  --Wi-Fi/4G-->  Internet
 ```
 
-Limits: text only (no images, no JavaScript, no forms/login yet). It is a small browser inside the Nokia app, not a system-wide connection. HTTPS sites work because the Android phone does the fetching.
+Limits: text pages with links. Pictures show as `(Image: ...)` links; select one to view it full screen (shrunk to the Nokia screen). JavaScript pages are rendered by the Android app (WebView). Forms and login work in **Remote browser** mode (see below). It is a small browser inside the Nokia app, not a system-wide connection. HTTPS sites work because the Android phone does the fetching.
 
 ## Keys on the Nokia
 
@@ -26,6 +26,24 @@ Limits: text only (no images, no JavaScript, no forms/login yet). It is a small 
 | Left softkey | Options menu (same actions + Settings) |
 
 Settings: text size, dark/light theme, page size (8k to 100k characters), home page.
+
+## Remote browser (Options > Remote browser)
+
+The Android phone loads the page in a real WebView (JavaScript, forms, cookies) and sends a small JPEG of the screen to the Nokia. You move a cursor with the D-pad and click with Select. Keep the Android app open with the screen on.
+
+| Key | Action |
+|---|---|
+| D-pad | move the cursor (hold = faster); pushing at the top/bottom edge scrolls the page |
+| Select / 5 | click at the cursor (a text field opens a typing box) |
+| 2 / 8 | scroll up / down |
+| 4 or * / 6 | back / forward |
+| # | reload |
+| 1 / 7 | zoom in / out |
+| 3 / 9 | go to address / search |
+| 0 | type in the selected text field |
+| Options > Text mode | back to the normal text browser |
+
+Typing box: **Send** fills the field, **Send + Enter** also submits it. Passwords are never echoed in the relay log. Each action takes about one to three seconds over Bluetooth; video does not play.
 
 ## Get the apps (built by GitHub)
 
@@ -48,6 +66,7 @@ Settings: text size, dark/light theme, page size (8k to 100k characters), home p
 
 ## Protocol
 
-- Nokia sends one line: `<url>\n`
-- Android replies with plain UTF-8 text (max 8000 characters), then closes the connection.
+- Page request: `GET\t<url>\t<maxChars>\n`; Android replies with a 4-byte length plus UTF-8 text, then closes the connection.
+- Picture request: `IMG\t<url>\t<maxW>\t<maxH>\n`; reply is a 4-byte length plus a JPEG that fits the box (length 0 = failed)
+- Remote browser: `RB\t<OPEN|CLICK|SCROLL|BACK|FWD|RELOAD|ZOOM|TEXT|SHOT>\t...\n`; reply is a 4-byte length, then `[int metaLen][meta lines key=value][JPEG]`
 - Service UUID: `a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90`
