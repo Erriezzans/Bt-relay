@@ -7,6 +7,10 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -20,6 +24,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
+import android.widget.FrameLayout;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -72,12 +77,26 @@ public class MainActivity extends Activity {
     // Runs inside the hidden WebView after the page has loaded: numbers the links
     // like the static converter does and returns the visible text as JSON.
     static final String EXTRACT_JS =
-            "(function(){var L=[],as=document.querySelectorAll('a[href]');"
-            + "for(var i=0;i<as.length&&L.length<" + MAX_LINKS + ";i++){var a=as[i];"
-            + "var t=(a.innerText||a.textContent||'').replace(/\\s+/g,' ').trim();"
-            + "var r=a.getAttribute('href')||'',h=a.href||'';"
-            + "if(!t||!h||r.charAt(0)==='#'||/^(javascript:|mailto:|tel:|data:)/i.test(h))continue;"
-            + "L.push([t,h]);a.appendChild(document.createTextNode('['+L.length+']'));}"
+            "(function(){var L=[],els=document.querySelectorAll('a[href],img');"
+            + "function alt(x){var s=(x.getAttribute('alt')||x.getAttribute('title')||'')"
+            + ".replace(/\\s+/g,' ').trim();return s.length>30?s.substring(0,30):s;}"
+            + "for(var i=0;i<els.length&&L.length<" + MAX_LINKS + ";i++){var e=els[i];"
+            + "if(e.tagName==='IMG'){"
+            + "if(e.closest('a[href]')||e.offsetParent===null)continue;"
+            + "var aw=parseInt(e.getAttribute('width')),ah=parseInt(e.getAttribute('height'));"
+            + "if((aw>0&&aw<40)||(ah>0&&ah<40))continue;"
+            + "var src=e.currentSrc||e.getAttribute('data-src')||e.src||'';"
+            + "if(!src||/^data:/i.test(src))continue;"
+            + "var a1=alt(e),lab=a1?'(Image: '+a1+')':'(Image)';"
+            + "L.push([lab,'IMG:'+new URL(src,document.baseURI).href]);"
+            + "e.parentNode.insertBefore(document.createTextNode(' '+lab+'['+L.length+'] '),e.nextSibling);"
+            + "}else{"
+            + "var t=(e.innerText||e.textContent||'').replace(/\\s+/g,' ').trim(),"
+            + "r=e.getAttribute('href')||'',h=e.href||'',pre='';"
+            + "if(!h||r.charAt(0)==='#'||/^(javascript:|mailto:|tel:|data:)/i.test(h))continue;"
+            + "if(!t){var im=e.querySelector('img');if(!im)continue;"
+            + "var a2=alt(im);t=a2?'(Link: '+a2+')':'(Image link)';pre=t;}"
+            + "L.push([t,h]);e.appendChild(document.createTextNode(pre+'['+L.length+']'));}}"
             + "return JSON.stringify({title:document.title||'',url:location.href,"
             + "text:document.body?document.body.innerText:'',links:L});})()";
 
@@ -85,6 +104,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private final Object webLock = new Object();
     private volatile boolean alwaysRender = false;
+    private RemoteBrowser remoteBrowser;
     private ScrollView scroll;
     private BluetoothServerSocket server;
     private volatile boolean running = false;
@@ -137,7 +157,17 @@ public class MainActivity extends Activity {
         root.addView(render);
         root.addView(web, new LinearLayout.LayoutParams(1, 1));
         root.addView(scroll);
-        setContentView(root);
+        // The remote-browser WebView lives behind the normal screen (an opaque background hides it).
+        root.setBackgroundColor(0xFF000000);
+        FrameLayout frame = new FrameLayout(this);
+        frame.addView(root, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(frame);
+        remoteBrowser = new RemoteBrowser(this, frame, new RemoteBrowser.Log() {
+            public void log(String m) {
+                MainActivity.this.log(m);
+            }
+        });
 
         if (Build.VERSION.SDK_INT >= 31) {
             requestPermissions(new String[]{
@@ -200,9 +230,17 @@ public class MainActivity extends Activity {
             BufferedReader in = new BufferedReader(
                     new InputStreamReader(s.getInputStream(), "UTF-8"));
             String line = in.readLine();
-            log("Request: " + line);
+            // never show what was typed into web pages (passwords) in the log
+            log("Request: " + (line != null && line.startsWith("RB\tTEXT") ? "RB TEXT (hidden)" : line));
 
-            byte[] data = answer(line).getBytes("UTF-8");
+            byte[] data;
+            if (line != null && line.startsWith("RB\t")) {
+                data = remoteBrowser.handle(line);
+            } else if (line != null && line.startsWith("IMG\t")) {
+                data = image(line);
+            } else {
+                data = answer(line).getBytes("UTF-8");
+            }
             DataOutputStream out = new DataOutputStream(s.getOutputStream());
             out.writeInt(data.length);
             out.write(data);
@@ -411,12 +449,25 @@ public class MainActivity extends Activity {
 
         // links -> text[n]
         List<String[]> links = new ArrayList<String[]>();
-        Matcher m = Pattern.compile("(?is)<a\\b([^>]*)>(.*?)</a\\s*>").matcher(h);
+        Matcher m = Pattern.compile("(?is)<a\\b([^>]*)>(.*?)</a\\s*>|<img\\b([^>]*)>").matcher(h);
         StringBuffer sb = new StringBuffer();
         Pattern hrefP = Pattern.compile("(?is)\\bhref\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))");
         while (m.find()) {
+            if (m.group(3) != null) {   // <img>
+                m.appendReplacement(sb, Matcher.quoteReplacement(imageItem(m.group(3), base, links)));
+                continue;
+            }
             String inner = decode(stripTags(m.group(2))).replaceAll("\\s+", " ").trim();
-            String rep = inner;
+            boolean imgOnly = false;
+            if (inner.length() == 0) {   // a link that only holds a picture
+                Matcher im = Pattern.compile("(?is)<img\\b([^>]*)>").matcher(m.group(2));
+                if (im.find()) {
+                    String alt = altText(im.group(1));
+                    inner = alt.length() > 0 ? "(Link: " + alt + ")" : "(Image link)";
+                    imgOnly = true;
+                }
+            }
+            String rep = imgOnly ? "" : inner;
             if (inner.length() > 0 && links.size() < MAX_LINKS) {
                 Matcher hm = hrefP.matcher(m.group(1));
                 if (hm.find()) {
@@ -464,6 +515,45 @@ public class MainActivity extends Activity {
         return reply(title, base, h, links);
     }
 
+    private String attr(String tag, String name) {
+        Matcher m = Pattern.compile("(?is)(?:^|\\s)" + name
+                + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").matcher(tag);
+        if (!m.find()) return "";
+        String v = m.group(1) != null ? m.group(1) : m.group(2) != null ? m.group(2) : m.group(3);
+        return decode(v).trim();
+    }
+
+    private String altText(String tag) {
+        String a = attr(tag, "alt");
+        if (a.length() == 0) a = attr(tag, "title");
+        a = a.replaceAll("\\s+", " ").trim();
+        return a.length() > 30 ? a.substring(0, 30) : a;
+    }
+
+    private int num(String s) {
+        try { return Integer.parseInt(s.replaceAll("[^0-9]", "")); } catch (Exception e) { return 0; }
+    }
+
+    /** Turns an <img> into a selectable "(Image: alt)[n]" item; the link target is IMG:<url>. */
+    private String imageItem(String tag, String base, List<String[]> links) {
+        if (links.size() >= MAX_LINKS) return "";
+        String src = attr(tag, "data-src");
+        if (src.length() == 0) src = attr(tag, "src");
+        if (src.length() == 0 || src.toLowerCase().startsWith("data:")) return "";
+        int w = num(attr(tag, "width")), hh = num(attr(tag, "height"));
+        if ((w > 0 && w < 40) || (hh > 0 && hh < 40)) return "";   // icons, tracking pixels
+        String abs;
+        try {
+            abs = new URL(new URL(base), src).toString();
+        } catch (Exception e) {
+            return "";
+        }
+        String alt = altText(tag);
+        String label = alt.length() > 0 ? "(Image: " + alt + ")" : "(Image)";
+        links.add(new String[]{label, "IMG:" + abs});
+        return " " + label + "[" + links.size() + "] ";
+    }
+
     private String cut(String s, int max) {
         if (s.length() <= max) return s;
         return s.substring(0, max) + "\n\n[Page cut at " + max + " characters. Raise page size in Settings.]";
@@ -496,6 +586,87 @@ public class MainActivity extends Activity {
         return s.replace('\n', ' ').replace('\t', ' ').replace('\u0001', ' ').trim();
     }
 
+    // ----------------------------------------------------------------- images
+
+    /** Request: IMG\t<url>\t<maxW>\t<maxH>. Reply bytes: a JPEG that fits the box, or empty on failure. */
+    private byte[] image(String line) {
+        try {
+            String[] p = line.split("\t");
+            String url = p[1].trim();
+            int mw = p.length > 2 ? Integer.parseInt(p[2].trim()) : 240;
+            int mh = p.length > 3 ? Integer.parseInt(p[3].trim()) : 320;
+            mw = Math.max(32, Math.min(800, mw));
+            mh = Math.max(32, Math.min(800, mh));
+            log("Image: " + url);
+
+            byte[] raw = download(url, 6000000);
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(raw, 0, raw.length, o);
+            if (o.outWidth <= 0 || o.outHeight <= 0) return new byte[0];
+            int ss = 1;
+            while (o.outWidth / (ss * 2) >= mw && o.outHeight / (ss * 2) >= mh) ss *= 2;
+            o = new BitmapFactory.Options();
+            o.inSampleSize = ss;
+            Bitmap bmp = BitmapFactory.decodeByteArray(raw, 0, raw.length, o);
+            if (bmp == null) return new byte[0];
+
+            float sc = Math.min(1f, Math.min(mw / (float) bmp.getWidth(), mh / (float) bmp.getHeight()));
+            if (sc < 1f) {
+                bmp = Bitmap.createScaledBitmap(bmp,
+                        Math.max(1, Math.round(bmp.getWidth() * sc)),
+                        Math.max(1, Math.round(bmp.getHeight() * sc)), true);
+            }
+            // JPEG has no transparency: draw on white first.
+            Bitmap flat = Bitmap.createBitmap(bmp.getWidth(), bmp.getHeight(), Bitmap.Config.RGB_565);
+            Canvas cv = new Canvas(flat);
+            cv.drawColor(Color.WHITE);
+            cv.drawBitmap(bmp, 0, 0, null);
+
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            flat.compress(Bitmap.CompressFormat.JPEG, 70, bo);
+            byte[] out = bo.toByteArray();
+            log("Image sent: " + flat.getWidth() + "x" + flat.getHeight() + ", " + out.length + " bytes");
+            return out.length > 390000 ? new byte[0] : out;
+        } catch (Throwable t) {
+            log("Image error: " + t);
+            return new byte[0];
+        }
+    }
+
+    private byte[] download(String url, int maxBytes) throws Exception {
+        String cur = url;
+        HttpURLConnection c = null;
+        for (int hop = 0; hop < 8; hop++) {
+            URL u = new URL(cur);
+            c = (HttpURLConnection) u.openConnection();
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(20000);
+            c.setInstanceFollowRedirects(false);
+            c.setRequestProperty("User-Agent", UA);
+            c.setRequestProperty("Accept", "image/*,*/*;q=0.5");
+            c.setRequestProperty("Referer", u.getProtocol() + "://" + u.getHost() + "/");
+            int code = c.getResponseCode();
+            if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                String loc = c.getHeaderField("Location");
+                if (loc == null) break;
+                cur = new URL(u, loc).toString();
+                c.disconnect();
+                continue;
+            }
+            break;
+        }
+        int code = c.getResponseCode();
+        if (code >= 400) throw new Exception("HTTP " + code);
+        InputStream is = c.getInputStream();
+        ByteArrayOutputStream bo = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = is.read(buf)) != -1 && bo.size() < maxBytes) bo.write(buf, 0, n);
+        is.close();
+        return bo.toByteArray();
+    }
+
     private String reply(String title, String url, String body, List<String[]> links) {
         StringBuilder sb = new StringBuilder();
         sb.append(clean(title)).append('\n').append(clean(url)).append('\n').append(body);
@@ -521,5 +692,6 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         stopRelay();
+        if (remoteBrowser != null) remoteBrowser.destroy();
     }
 }
