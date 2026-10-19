@@ -1247,12 +1247,13 @@ public class BtRelay extends MIDlet implements CommandListener {
 
     /** Shows the relay's screenshot, a cursor you move with the D-pad, and a status bar. */
     private class RemoteView extends Canvas {
-        private final int[] ZOOMS = {240, 320, 400, 480, 640};
+        private final int[] ZOOMS = {240, 320, 400, 480, 640, 800, 1024};
         private Image shot;
         private int cx = 100;
         private int cy = 100;
-        private int zoom = 1;
+        private int zoom = 3;
         private int pct = 0;
+        private int lastShotBytes = 0;
         private String title = "";
         String pageUrl = "";
         private String msg = "";
@@ -1273,8 +1274,11 @@ public class BtRelay extends MIDlet implements CommandListener {
         private Command rZoomOut = new Command("Zoom out", Command.SCREEN, 7);
         private Command rText = new Command("Text mode", Command.SCREEN, 8);
         private Command rBack = new Command("Back", Command.BACK, 1);
+        private Command rExit = new Command("Exit", Command.EXIT, 9);
+        private Command rClick = new Command("Click (Select)", Command.SCREEN, 1);
 
         RemoteView() {
+            addCommand(rClick);
             addCommand(rUrl);
             addCommand(rSearch);
             addCommand(rType);
@@ -1284,6 +1288,7 @@ public class BtRelay extends MIDlet implements CommandListener {
             addCommand(rZoomOut);
             addCommand(rText);
             addCommand(rBack);
+            addCommand(rExit);
             setCommandListener(BtRelay.this);
         }
 
@@ -1437,6 +1442,9 @@ public class BtRelay extends MIDlet implements CommandListener {
                 if (!rep) {
                     click();
                 }
+            } else if (!rep) {
+                msg = cat("Key ", Integer.toString(k));
+                repaint();
             }
         }
 
@@ -1461,6 +1469,8 @@ public class BtRelay extends MIDlet implements CommandListener {
 
         private void click() {
             if (working) {
+                msg = "Busy, wait...";
+                repaint();
                 return;
             }
             afterClick = true;
@@ -1500,7 +1510,12 @@ public class BtRelay extends MIDlet implements CommandListener {
         }
 
         void command(Command c) {
-            if (c == rUrl) {
+            if (c == rExit) {
+                destroyApp(true);
+                notifyDestroyed();
+            } else if (c == rClick) {
+                click();
+            } else if (c == rUrl) {
                 askRemoteUrl();
             } else if (c == rSearch) {
                 askRemoteSearch();
@@ -1593,6 +1608,11 @@ public class BtRelay extends MIDlet implements CommandListener {
             try {
                 byte[] d = exchange(line, 600000, "Remote browser...");
                 apply(d);
+                if (line.startsWith("RB\tSCROLL") && lastShotBytes < 2000) {
+                    Thread.sleep(500);   // page not painted yet: ask for the screen again
+                    d = exchange(rb("SHOT", null, null), 600000, "Remote browser...");
+                    apply(d);
+                }
             } catch (Throwable t) {
                 afterClick = false;
                 String e = String.valueOf(t);
@@ -1614,6 +1634,7 @@ public class BtRelay extends MIDlet implements CommandListener {
             in.readFully(mb);
             String meta = new String(mb, "UTF-8");
             int off = 4 + ml;
+            lastShotBytes = d.length - off;
             if (d.length > off) {
                 shot = Image.createImage(d, off, d.length - off);
             }
