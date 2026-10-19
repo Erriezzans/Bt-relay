@@ -24,6 +24,7 @@ import javax.microedition.lcdui.Displayable;
 import javax.microedition.lcdui.Font;
 import javax.microedition.lcdui.Form;
 import javax.microedition.lcdui.Graphics;
+import javax.microedition.lcdui.Image;
 import javax.microedition.lcdui.List;
 import javax.microedition.lcdui.TextBox;
 import javax.microedition.lcdui.TextField;
@@ -51,6 +52,8 @@ public class BtRelay extends MIDlet implements CommandListener {
             + "4 / 6 or Left/Right: fast jump (10%)\n"
             + "1 / 7: top / bottom\n"
             + "5: list of all links\n"
+            + "Images show as (Image: ...) links: Select opens the picture\n"
+            + "Options > Remote browser: the real page with a cursor (forms, login, JavaScript)\n"
             + "3: go to address\n"
             + "9: search\n"
             + "*: back\n"
@@ -69,6 +72,8 @@ public class BtRelay extends MIDlet implements CommandListener {
     // state
     private Display display;
     private View view;
+    private ImageView imageView;
+    private RemoteView remote;
     private String relayUrl = null;
     private volatile boolean busy = false;
     private String curUrl = "";
@@ -90,6 +95,9 @@ public class BtRelay extends MIDlet implements CommandListener {
     private Command searchCmd = new Command("Search", Command.SCREEN, 2);
     private Command linksCmd = new Command("Links", Command.SCREEN, 3);
     private Command reloadCmd = new Command("Reload", Command.SCREEN, 4);
+    private Command remoteCmd = new Command("Remote browser", Command.SCREEN, 3);
+    private Command sendCmd = new Command("Send", Command.OK, 1);
+    private Command sendEnterCmd = new Command("Send + Enter", Command.SCREEN, 2);
     private Command homeCmd = new Command("Home / Help", Command.SCREEN, 5);
     private Command settingsCmd = new Command("Settings", Command.SCREEN, 6);
     private Command exitCmd = new Command("Exit", Command.EXIT, 7);
@@ -108,6 +116,7 @@ public class BtRelay extends MIDlet implements CommandListener {
             view.addCommand(urlCmd);
             view.addCommand(searchCmd);
             view.addCommand(linksCmd);
+            view.addCommand(remoteCmd);
             view.addCommand(reloadCmd);
             view.addCommand(homeCmd);
             view.addCommand(settingsCmd);
@@ -136,6 +145,8 @@ public class BtRelay extends MIDlet implements CommandListener {
                 askUrl();
             } else if (c == searchCmd) {
                 askSearch();
+            } else if (c == remoteCmd) {
+                startRemote();
             } else if (c == linksCmd) {
                 showLinks();
             } else if (c == backCmd) {
@@ -150,7 +161,16 @@ public class BtRelay extends MIDlet implements CommandListener {
                 destroyApp(true);
                 notifyDestroyed();
             }
+        } else if (d == remote) {
+            remote.command(c);
         } else if (d == inputBox) {
+            if (inputMode >= 2) {
+                display.setCurrent(remote);
+                if (c == okCmd || c == sendCmd || c == sendEnterCmd) {
+                    remote.input(inputMode, inputBox.getString(), c == sendEnterCmd);
+                }
+                return;
+            }
             if (c == okCmd) {
                 String t = inputBox.getString().trim();
                 display.setCurrent(view);
@@ -173,11 +193,13 @@ public class BtRelay extends MIDlet implements CommandListener {
                 display.setCurrent(view);
                 if (idx >= 0 && idx < links.size()) {
                     String[] lk = (String[]) links.elementAt(idx);
-                    load(lk[1], true);
+                    openLink(lk[1]);
                 }
             } else {
                 display.setCurrent(view);
             }
+        } else if (d == imageView) {
+            display.setCurrent(view);
         } else if (d == settingsForm) {
             if (c == saveCmd) {
                 fontSize = fontCg.getSelectedIndex();
@@ -275,6 +297,143 @@ public class BtRelay extends MIDlet implements CommandListener {
         }
     }
 
+    private void openLink(String url) {
+        if (url.startsWith("IMG:")) {
+            showImage(url.substring(4));
+        } else {
+            load(url, true);
+        }
+    }
+
+    // ------------------------------------------------------- remote browser
+
+    private void startRemote() {
+        if (remote == null) {
+            remote = new RemoteView();
+        }
+        display.setCurrent(remote);
+        if (remote.pageUrl.length() == 0) {
+            if (curUrl.length() > 0) {
+                remote.open(curUrl);
+            } else {
+                askRemoteUrl();
+            }
+        }
+    }
+
+    private void showInput(TextBox box, int mode) {
+        inputBox = box;
+        inputMode = mode;
+        inputBox.setCommandListener(this);
+        display.setCurrent(inputBox);
+    }
+
+    private void askRemoteUrl() {
+        String start = (remote != null && remote.pageUrl.length() > 0) ? remote.pageUrl : "http://";
+        TextBox b = new TextBox("Go to address", start, 512, TextField.URL);
+        b.addCommand(okCmd);
+        b.addCommand(cancelCmd);
+        showInput(b, 2);
+    }
+
+    private void askRemoteSearch() {
+        TextBox b = new TextBox("Search", "", 200, TextField.ANY);
+        b.addCommand(okCmd);
+        b.addCommand(cancelCmd);
+        showInput(b, 3);
+    }
+
+    private void askRemoteText(String hint, String type, String value) {
+        int cons = TextField.ANY;
+        if (type.equals("password")) {
+            cons = TextField.PASSWORD;
+        } else if (type.equals("email")) {
+            cons = TextField.EMAILADDR;
+        } else if (type.equals("number")) {
+            cons = TextField.NUMERIC;
+        } else if (type.equals("tel")) {
+            cons = TextField.PHONENUMBER;
+        } else if (type.equals("url")) {
+            cons = TextField.URL;
+        }
+        String title = hint.length() > 0 ? hint : "Type text";
+        if (title.length() > 30) {
+            title = title.substring(0, 30);
+        }
+        if (value.length() > 400) {
+            value = value.substring(0, 400);
+        }
+        TextBox b = new TextBox(title, value, 500, cons);
+        b.addCommand(sendCmd);
+        b.addCommand(sendEnterCmd);
+        b.addCommand(cancelCmd);
+        showInput(b, 4);
+    }
+
+    private String rb(String cmd, String a, String b) {
+        StringBuffer s = new StringBuffer();
+        s.append("RB\t").append(cmd);
+        if (a != null) {
+            s.append('\t').append(a);
+        }
+        if (b != null) {
+            s.append('\t').append(b);
+        }
+        s.append('\n');
+        return s.toString();
+    }
+
+    private static String flat(String s) {
+        return s.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ');
+    }
+
+    // --------------------------------------------------------------- images
+
+    private void showImage(final String url) {
+        if (busy) {
+            return;
+        }
+        new Thread(new Runnable() {
+            public void run() {
+                doImage(url);
+            }
+        }).start();
+    }
+
+    private void imageError(String msg) {
+        view.setStatus(null);
+        Alert a = new Alert("Image", msg, null, AlertType.ERROR);
+        a.setTimeout(2500);
+        display.setCurrent(a, view);
+    }
+
+    private void doImage(String url) {
+        busy = true;
+        try {
+            view.setStatus("Loading image...");
+            StringBuffer req = new StringBuffer();
+            req.append("IMG\t").append(url).append('\t');
+            req.append(Integer.toString(view.getWidth())).append('\t');
+            req.append(Integer.toString(view.getHeight())).append('\n');
+            byte[] data = exchange(req.toString(), 400000, "Waiting for image...");
+            if (data.length == 0) {
+                imageError("Cannot load this image");
+                return;
+            }
+            Image im = Image.createImage(data, 0, data.length);
+            data = null;
+            imageView = new ImageView(im);
+            imageView.addCommand(backCmd);
+            imageView.setCommandListener(this);
+            view.setStatus(null);
+            display.setCurrent(imageView);
+        } catch (Throwable t) {
+            imageError("Image failed (too big or relay error)");
+        } finally {
+            busy = false;
+        }
+    }
+
     // -------------------------------------------------------------- loading
 
     private void load(final String url, final boolean push) {
@@ -362,6 +521,15 @@ public class BtRelay extends MIDlet implements CommandListener {
     }
 
     private String request(String url) throws IOException {
+        StringBuffer req = new StringBuffer();
+        req.append("GET\t").append(url).append('\t');
+        req.append(Integer.toString(PAGE_CHARS[pageIdx])).append('\n');
+        byte[] data = exchange(req.toString(), 3000000, "Waiting for page...");
+        return new String(data, "UTF-8");
+    }
+
+    // Sends one request line to the relay and returns the length-prefixed reply.
+    private byte[] exchange(String reqLine, int maxLen, String waitMsg) throws IOException {
         StreamConnection conn = null;
         OutputStream os = null;
         DataInputStream dis = null;
@@ -373,21 +541,20 @@ public class BtRelay extends MIDlet implements CommandListener {
                 conn = open();
             }
             os = conn.openOutputStream();
-            StringBuffer req = new StringBuffer();
-            req.append("GET\t").append(url).append('\t');
-            req.append(Integer.toString(PAGE_CHARS[pageIdx])).append('\n');
-            os.write(req.toString().getBytes("UTF-8"));
+            os.write(reqLine.getBytes("UTF-8"));
             os.flush();
 
-            view.setStatus("Waiting for page...");
+            view.setStatus(waitMsg);
             dis = conn.openDataInputStream();
             int len = dis.readInt();
-            if (len < 0 || len > 3000000) {
+            if (len < 0 || len > maxLen) {
                 throw new IOException("Bad reply from relay");
             }
             byte[] data = new byte[len];
-            dis.readFully(data);
-            return new String(data, "UTF-8");
+            if (len > 0) {
+                dis.readFully(data);
+            }
+            return data;
         } catch (IOException e) {
             relayUrl = null;
             throw e;
@@ -713,7 +880,7 @@ public class BtRelay extends MIDlet implements CommandListener {
         private void openSel() {
             if (sel >= 1 && sel <= links.size()) {
                 String[] l = (String[]) links.elementAt(sel - 1);
-                load(l[1], true);
+                openLink(l[1]);
             } else {
                 showLinks();
             }
@@ -1026,6 +1193,483 @@ public class BtRelay extends MIDlet implements CommandListener {
                 top = 0;
             }
             repaint();
+        }
+    }
+
+    // ----------------------------------------------------------- image view
+
+    private class ImageView extends Canvas {
+        private Image img;
+        private int ox = 0;
+        private int oy = 0;
+
+        ImageView(Image i) {
+            img = i;
+        }
+
+        protected void paint(Graphics g) {
+            int w = getWidth();
+            int h = getHeight();
+            g.setColor(0x000000);
+            g.fillRect(0, 0, w, h);
+            int x = img.getWidth() <= w ? (w - img.getWidth()) / 2 : -ox;
+            int y = img.getHeight() <= h ? (h - img.getHeight()) / 2 : -oy;
+            g.drawImage(img, x, y, Graphics.TOP | Graphics.LEFT);
+        }
+
+        protected void keyPressed(int k) {
+            int a = 0;
+            try {
+                a = getGameAction(k);
+            } catch (Exception e) {
+                a = 0;
+            }
+            int step = 40;
+            if (a == UP) {
+                oy -= step;
+            } else if (a == DOWN) {
+                oy += step;
+            } else if (a == LEFT) {
+                ox -= step;
+            } else if (a == RIGHT) {
+                ox += step;
+            } else {
+                display.setCurrent(view);   // any other key goes back to the page
+                return;
+            }
+            ox = Math.max(0, Math.min(ox, img.getWidth() - getWidth()));
+            oy = Math.max(0, Math.min(oy, img.getHeight() - getHeight()));
+            repaint();
+        }
+    }
+
+    // ------------------------------------------------------------ remote view
+
+    /** Shows the relay's screenshot, a cursor you move with the D-pad, and a status bar. */
+    private class RemoteView extends Canvas {
+        private final int[] ZOOMS = {240, 320, 400, 480, 640};
+        private Image shot;
+        private int cx = 100;
+        private int cy = 100;
+        private int zoom = 1;
+        private int pct = 0;
+        private String title = "";
+        String pageUrl = "";
+        private String msg = "";
+        private volatile boolean working = false;
+        private boolean afterClick = false;
+        private boolean editOn = false;
+        private String editType = "";
+        private String editHint = "";
+        private String editValue = "";
+        private Font font = Font.getFont(Font.FACE_PROPORTIONAL, Font.STYLE_PLAIN, Font.SIZE_SMALL);
+
+        private Command rUrl = new Command("Go to address", Command.SCREEN, 1);
+        private Command rSearch = new Command("Search", Command.SCREEN, 2);
+        private Command rType = new Command("Type in field", Command.SCREEN, 3);
+        private Command rFwd = new Command("Forward", Command.SCREEN, 4);
+        private Command rReload = new Command("Reload", Command.SCREEN, 5);
+        private Command rZoomIn = new Command("Zoom in", Command.SCREEN, 6);
+        private Command rZoomOut = new Command("Zoom out", Command.SCREEN, 7);
+        private Command rText = new Command("Text mode", Command.SCREEN, 8);
+        private Command rBack = new Command("Back", Command.BACK, 1);
+
+        RemoteView() {
+            addCommand(rUrl);
+            addCommand(rSearch);
+            addCommand(rType);
+            addCommand(rFwd);
+            addCommand(rReload);
+            addCommand(rZoomIn);
+            addCommand(rZoomOut);
+            addCommand(rText);
+            addCommand(rBack);
+            setCommandListener(BtRelay.this);
+        }
+
+        private int barH() {
+            return font.getHeight() + 2;
+        }
+
+        private String fit(String s, int maxW) {
+            if (font.stringWidth(s) <= maxW) {
+                return s;
+            }
+            int n = s.length();
+            while (n > 1 && font.stringWidth(s.substring(0, n)) > maxW) {
+                n--;
+            }
+            return s.substring(0, n);
+        }
+
+        protected void paint(Graphics g) {
+            int w = getWidth();
+            int h = getHeight();
+            int bh = barH();
+            g.setColor(0xFFFFFF);
+            g.fillRect(0, 0, w, h);
+            g.setFont(font);
+            if (shot != null) {
+                g.drawImage(shot, 0, 0, Graphics.TOP | Graphics.LEFT);
+            } else {
+                g.setColor(0x333333);
+                g.drawString("Remote browser", 4, 4, Graphics.TOP | Graphics.LEFT);
+                g.drawString("3 = address, 9 = search", 4, 4 + font.getHeight(),
+                        Graphics.TOP | Graphics.LEFT);
+            }
+            // cursor: white shadow under a black cross with a red centre
+            g.setColor(0xFFFFFF);
+            g.drawLine(cx - 6, cy + 1, cx + 6, cy + 1);
+            g.drawLine(cx + 1, cy - 6, cx + 1, cy + 6);
+            g.setColor(0x000000);
+            g.drawLine(cx - 6, cy, cx + 6, cy);
+            g.drawLine(cx, cy - 6, cx, cy + 6);
+            g.setColor(0xFF0000);
+            g.fillRect(cx - 1, cy - 1, 3, 3);
+
+            g.setColor(0x2A3A66);
+            g.fillRect(0, h - bh, w, bh);
+            g.setColor(0xFFFFFF);
+            String t;
+            if (msg.length() > 0) {
+                t = msg;
+            } else {
+                StringBuffer b = new StringBuffer();
+                b.append(Integer.toString(pct)).append("% ").append(title);
+                t = b.toString();
+            }
+            g.drawString(fit(t, w - 4), 2, h - bh + 1, Graphics.TOP | Graphics.LEFT);
+        }
+
+        // ---- keys
+
+        protected void keyPressed(int k) {
+            key(k, false);
+        }
+
+        protected void keyRepeated(int k) {
+            key(k, true);
+        }
+
+        private void key(int k, boolean rep) {
+            if (k == -5 || k == 10 || k == 13 || k == KEY_NUM5) {
+                if (!rep) {
+                    click();
+                }
+                return;
+            }
+            if (k == KEY_NUM2) {
+                if (!rep) {
+                    scroll(-1);
+                }
+                return;
+            }
+            if (k == KEY_NUM8) {
+                if (!rep) {
+                    scroll(1);
+                }
+                return;
+            }
+            if (k == KEY_NUM4 || k == KEY_STAR) {
+                if (!rep) {
+                    navigate("BACK");
+                }
+                return;
+            }
+            if (k == KEY_NUM6) {
+                if (!rep) {
+                    navigate("FWD");
+                }
+                return;
+            }
+            if (k == KEY_POUND) {
+                if (!rep) {
+                    navigate("RELOAD");
+                }
+                return;
+            }
+            if (k == KEY_NUM1) {
+                if (!rep) {
+                    zoomBy(-1);
+                }
+                return;
+            }
+            if (k == KEY_NUM7) {
+                if (!rep) {
+                    zoomBy(1);
+                }
+                return;
+            }
+            if (k == KEY_NUM3) {
+                if (!rep) {
+                    askRemoteUrl();
+                }
+                return;
+            }
+            if (k == KEY_NUM9) {
+                if (!rep) {
+                    askRemoteSearch();
+                }
+                return;
+            }
+            if (k == KEY_NUM0) {
+                if (!rep) {
+                    typeNow();
+                }
+                return;
+            }
+            int a = 0;
+            try {
+                a = getGameAction(k);
+            } catch (Exception e) {
+                return;
+            }
+            int step = rep ? 24 : 8;
+            if (a == UP) {
+                move(0, -step);
+            } else if (a == DOWN) {
+                move(0, step);
+            } else if (a == LEFT) {
+                move(-step, 0);
+            } else if (a == RIGHT) {
+                move(step, 0);
+            } else if (a == FIRE) {
+                if (!rep) {
+                    click();
+                }
+            }
+        }
+
+        private void move(int dx, int dy) {
+            int w = getWidth();
+            int ih = getHeight() - barH();
+            cx = Math.max(0, Math.min(w - 1, cx + dx));
+            int ny = cy + dy;
+            if (ny < 0) {
+                cy = 0;
+                scroll(-1);          // pushed against the top edge: scroll the page
+            } else if (ny > ih - 1) {
+                cy = ih - 1;
+                scroll(1);           // pushed against the bottom edge
+            } else {
+                cy = ny;
+            }
+            repaint();
+        }
+
+        // ---- actions
+
+        private void click() {
+            if (working) {
+                return;
+            }
+            afterClick = true;
+            send(rb("CLICK", Integer.toString(cx), Integer.toString(cy)));
+        }
+
+        private void scroll(int dir) {
+            int ih = getHeight() - barH();
+            send(rb("SCROLL", Integer.toString(dir * ih * 3 / 4), null));
+        }
+
+        private void navigate(String what) {
+            send(rb(what, null, null));
+        }
+
+        private void zoomBy(int d) {
+            int z = Math.max(0, Math.min(ZOOMS.length - 1, zoom + d));
+            if (z == zoom) {
+                return;
+            }
+            zoom = z;
+            send(rb("ZOOM", Integer.toString(ZOOMS[zoom]), null));
+        }
+
+        private void typeNow() {
+            if (editOn) {
+                askRemoteText(editHint, editType, editValue);
+            } else {
+                msg = "Click a text field first";
+                repaint();
+            }
+        }
+
+        private void leave() {
+            display.setCurrent(view);
+            view.setStatus(null);
+        }
+
+        void command(Command c) {
+            if (c == rUrl) {
+                askRemoteUrl();
+            } else if (c == rSearch) {
+                askRemoteSearch();
+            } else if (c == rType) {
+                typeNow();
+            } else if (c == rFwd) {
+                navigate("FWD");
+            } else if (c == rReload) {
+                navigate("RELOAD");
+            } else if (c == rZoomIn) {
+                zoomBy(-1);
+            } else if (c == rZoomOut) {
+                zoomBy(1);
+            } else if (c == rText) {
+                leave();
+            } else if (c == rBack) {
+                if (msg.equals("No history")) {
+                    leave();
+                } else {
+                    navigate("BACK");
+                }
+            }
+        }
+
+        /** Called when an address / search / text box was confirmed. */
+        void input(int mode, String t, boolean enter) {
+            if (mode == 4) {
+                StringBuffer b = new StringBuffer();
+                b.append("RB\tTEXT\t").append(enter ? "1" : "0").append('\t').append(flat(t)).append('\n');
+                send(b.toString());
+                return;
+            }
+            String u = t.trim();
+            if (u.length() == 0) {
+                return;
+            }
+            if (mode == 2) {
+                if (u.indexOf("://") < 0) {
+                    u = cat("http://", u);
+                }
+                open(u);
+            } else if (mode == 3) {
+                open(cat("https://duckduckgo.com/?q=", urlEncode(u)));
+            }
+        }
+
+        // ---- talking to the relay
+
+        void open(final String url) {
+            if (working) {
+                return;
+            }
+            working = true;
+            msg = "Opening...";
+            pageUrl = url;
+            repaint();
+            new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        Thread.sleep(150);   // let the screen size settle
+                    } catch (InterruptedException e) {
+                    }
+                    StringBuffer r = new StringBuffer();
+                    r.append("RB\tOPEN\t").append(url).append('\t');
+                    r.append(Integer.toString(getWidth())).append('\t');
+                    r.append(Integer.toString(getHeight() - barH())).append('\t');
+                    r.append(Integer.toString(ZOOMS[zoom])).append('\t');
+                    r.append("60\n");
+                    talk(r.toString());
+                }
+            }).start();
+        }
+
+        private boolean send(final String line) {
+            if (working) {
+                return false;
+            }
+            working = true;
+            msg = "Working...";
+            repaint();
+            new Thread(new Runnable() {
+                public void run() {
+                    talk(line);
+                }
+            }).start();
+            return true;
+        }
+
+        private void talk(String line) {
+            try {
+                byte[] d = exchange(line, 600000, "Remote browser...");
+                apply(d);
+            } catch (Throwable t) {
+                afterClick = false;
+                String e = String.valueOf(t);
+                msg = e.length() > 60 ? e.substring(0, 60) : e;
+            } finally {
+                working = false;
+                view.setStatus(null);
+                repaint();
+            }
+        }
+
+        private void apply(byte[] d) throws IOException {
+            DataInputStream in = new DataInputStream(new ByteArrayInputStream(d));
+            int ml = in.readInt();
+            if (ml < 0 || ml > d.length - 4) {
+                throw new IOException("Bad reply");
+            }
+            byte[] mb = new byte[ml];
+            in.readFully(mb);
+            String meta = new String(mb, "UTF-8");
+            int off = 4 + ml;
+            if (d.length > off) {
+                shot = Image.createImage(d, off, d.length - off);
+            }
+            msg = "";
+            boolean edit = false;
+            String et = "";
+            String eh = "";
+            String ev = "";
+            int pos = 0;
+            while (pos < meta.length()) {
+                int e = meta.indexOf('\n', pos);
+                if (e < 0) {
+                    e = meta.length();
+                }
+                String ln = meta.substring(pos, e);
+                pos = e + 1;
+                int q = ln.indexOf('=');
+                if (q <= 0) {
+                    continue;
+                }
+                String k = ln.substring(0, q);
+                String v = ln.substring(q + 1);
+                if (k.equals("title")) {
+                    title = v;
+                } else if (k.equals("url")) {
+                    if (v.length() > 0) {
+                        pageUrl = v;
+                        curUrl = v;
+                    }
+                } else if (k.equals("pct")) {
+                    try {
+                        pct = Integer.parseInt(v);
+                    } catch (NumberFormatException nfe) {
+                        pct = 0;
+                    }
+                } else if (k.equals("edit")) {
+                    edit = v.equals("1");
+                } else if (k.equals("etype")) {
+                    et = v;
+                } else if (k.equals("ehint")) {
+                    eh = v;
+                } else if (k.equals("evalue")) {
+                    ev = v;
+                } else if (k.equals("msg")) {
+                    msg = v;
+                }
+            }
+            editOn = edit;
+            editType = et;
+            editHint = eh;
+            editValue = ev;
+            boolean ask = afterClick && edit;
+            afterClick = false;
+            if (ask) {
+                askRemoteText(eh, et, ev);
+            }
         }
     }
 }
