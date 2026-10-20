@@ -460,14 +460,18 @@ class RemoteBrowser {
         final Bitmap bmp = Bitmap.createBitmap(imgW, imgH, Bitmap.Config.ARGB_8888);
         onUi(new Runnable() {
             public void run() {
-                Canvas c = new Canvas(bmp);
-                c.drawColor(Color.WHITE);
                 int ww = web.getWidth();
                 int wh = web.getHeight();
-                if (ww > 0 && wh > 0) {
-                    c.scale(imgW / (float) ww, imgH / (float) wh);
+                float sx = ww > 0 ? imgW / (float) ww : 1f;
+                float sy = wh > 0 ? imgH / (float) wh : 1f;
+                int scx = web.getScrollX();
+                int scy = web.getScrollY();
+                // WebView.draw() expects the canvas to be moved by the scroll offset already
+                drawWeb(bmp, sx, sy, -scx, -scy);
+                if ((scx != 0 || scy != 0) && isBlank(bmp)) {
+                    logger.log("Remote: blank after scroll, retrying without offset");
+                    drawWeb(bmp, sx, sy, 0, 0);
                 }
-                web.draw(c);
             }
         });
         ByteArrayOutputStream jb = new ByteArrayOutputStream();
@@ -476,6 +480,31 @@ class RemoteBrowser {
         byte[] jpeg = jb.toByteArray();
         logger.log("Remote screen: " + imgW + "x" + imgH + ", " + jpeg.length + " bytes");
         return reply(m.toString(), jpeg);
+    }
+
+    private void drawWeb(Bitmap bmp, float sx, float sy, float tx, float ty) {
+        Canvas c = new Canvas(bmp);
+        c.drawColor(Color.WHITE);
+        c.scale(sx, sy);
+        c.translate(tx, ty);
+        web.draw(c);
+    }
+
+    /** True when (a sample of) the picture is plain white. */
+    private static boolean isBlank(Bitmap b) {
+        int w = b.getWidth();
+        int h = b.getHeight();
+        int[] px = new int[w];
+        int stepY = Math.max(1, h / 24);
+        for (int y = 0; y < h; y += stepY) {
+            b.getPixels(px, 0, w, 0, y, w, 1);
+            for (int x = 0; x < w; x += 3) {
+                if ((px[x] & 0xFFFFFF) != 0xFFFFFF) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private byte[] reply(String meta, byte[] jpeg) throws IOException {

@@ -6,7 +6,11 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
+import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.media.projection.MediaProjectionConfig;
+import android.media.projection.MediaProjectionManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -105,6 +109,9 @@ public class MainActivity extends Activity {
     private final Object webLock = new Object();
     private volatile boolean alwaysRender = false;
     private RemoteBrowser remoteBrowser;
+    private Button soundBtn;
+    private static final int REQ_AUDIO_PERM = 2;
+    private static final int REQ_PROJECTION = 42;
     private ScrollView scroll;
     private BluetoothServerSocket server;
     private volatile boolean running = false;
@@ -134,6 +141,12 @@ public class MainActivity extends Activity {
             public void onClick(View v) { stopRelay(); }
         });
 
+        soundBtn = new Button(this);
+        soundBtn.setText("Start sound for Nokia");
+        soundBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { toggleSound(); }
+        });
+
         CheckBox render = new CheckBox(this);
         render.setText("Render pages with JavaScript (slower)");
         render.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
@@ -154,6 +167,7 @@ public class MainActivity extends Activity {
 
         root.addView(start);
         root.addView(stop);
+        root.addView(soundBtn);
         root.addView(render);
         root.addView(web, new LinearLayout.LayoutParams(1, 1));
         root.addView(scroll);
@@ -163,17 +177,93 @@ public class MainActivity extends Activity {
         frame.addView(root, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         setContentView(frame);
-        remoteBrowser = new RemoteBrowser(this, frame, new RemoteBrowser.Log() {
+        RemoteBrowser.Log lg = new RemoteBrowser.Log() {
             public void log(String m) {
                 MainActivity.this.log(m);
             }
-        });
+        };
+        remoteBrowser = new RemoteBrowser(this, frame, lg);
+        AudioCapture.logger = lg;
 
         if (Build.VERSION.SDK_INT >= 31) {
             requestPermissions(new String[]{
                     Manifest.permission.BLUETOOTH_CONNECT,
                     Manifest.permission.BLUETOOTH_ADVERTISE,
                     Manifest.permission.BLUETOOTH_SCAN}, 1);
+        }
+    }
+
+    // ------------------------------------------------------------------ sound
+
+    private void toggleSound() {
+        if (AudioCapture.isRunning()) {
+            startService(new Intent(this, CaptureService.class).setAction("STOP"));
+            soundBtn.setText("Start sound for Nokia");
+            log("Sound capture stopped");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 23
+                && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{
+                    Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.POST_NOTIFICATIONS}, REQ_AUDIO_PERM);
+            return;
+        }
+        MediaProjectionManager mpm =
+                (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        Intent i = Build.VERSION.SDK_INT >= 34
+                ? mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+                : mpm.createScreenCaptureIntent();
+        startActivityForResult(i, REQ_PROJECTION);   // Android asks you to allow it: choose the entire screen
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == REQ_AUDIO_PERM) {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                toggleSound();
+            } else {
+                log("Sound needs the microphone/audio permission");
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int result, Intent data) {
+        super.onActivityResult(req, result, data);
+        if (req == REQ_PROJECTION) {
+            if (result == RESULT_OK && data != null) {
+                Intent s = new Intent(this, CaptureService.class);
+                s.putExtra("code", result);
+                s.putExtra("data", data);
+                if (Build.VERSION.SDK_INT >= 26) {
+                    startForegroundService(s);
+                } else {
+                    startService(s);
+                }
+                soundBtn.setText("Stop sound for Nokia");
+                log("Sound capture started - lower this phone's volume if you do not want to hear it");
+            } else {
+                log("Sound capture was not allowed");
+            }
+        }
+    }
+
+    /** Request: AUD \t NEXT \t <waitSeconds>. Reply: 1 status byte (0 off, 1 no clip yet, 2 clip) + AMR clip. */
+    private byte[] audio(String line) {
+        try {
+            if (!AudioCapture.isRunning()) return new byte[]{0};
+            String[] p = line.split("\t");
+            int wait = p.length > 2 ? Math.max(0, Math.min(20, Integer.parseInt(p[2].trim()))) : 8;
+            byte[] c = AudioCapture.nextClip(wait * 1000L);
+            if (c == null) return new byte[]{(byte) (AudioCapture.isRunning() ? 1 : 0)};
+            byte[] out = new byte[c.length + 1];
+            out[0] = 2;
+            System.arraycopy(c, 0, out, 1, c.length);
+            return out;
+        } catch (Throwable t) {
+            return new byte[]{0};
         }
     }
 
@@ -236,6 +326,8 @@ public class MainActivity extends Activity {
             byte[] data;
             if (line != null && line.startsWith("RB\t")) {
                 data = remoteBrowser.handle(line);
+            } else if (line != null && line.startsWith("AUD\t")) {
+                data = audio(line);
             } else if (line != null && line.startsWith("IMG\t")) {
                 data = image(line);
             } else {

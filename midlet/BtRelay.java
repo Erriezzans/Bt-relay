@@ -28,6 +28,9 @@ import javax.microedition.lcdui.Image;
 import javax.microedition.lcdui.List;
 import javax.microedition.lcdui.TextBox;
 import javax.microedition.lcdui.TextField;
+import javax.microedition.media.Manager;
+import javax.microedition.media.Player;
+import javax.microedition.media.PlayerListener;
 import javax.microedition.midlet.MIDlet;
 import javax.microedition.rms.RecordStore;
 
@@ -53,7 +56,8 @@ public class BtRelay extends MIDlet implements CommandListener {
             + "1 / 7: top / bottom\n"
             + "5: list of all links\n"
             + "Images show as (Image: ...) links: Select opens the picture\n"
-            + "Options > Remote browser: the real page with a cursor (forms, login, JavaScript)\n"
+            + "Left softkey = Menu, right softkey = Back, centre key = select\n"
+            + "Menu > Remote browser: the real page with a cursor (forms, login, JavaScript)\n"
             + "3: go to address\n"
             + "9: search\n"
             + "*: back\n"
@@ -74,6 +78,13 @@ public class BtRelay extends MIDlet implements CommandListener {
     private View view;
     private ImageView imageView;
     private RemoteView remote;
+    private List textMenu;
+    private Command[] textMenuCmds;
+    private List remoteMenu;
+    private volatile boolean soundOn = false;
+    private Player player;
+    private final Object playLock = new Object();
+    private boolean playing = false;
     private String relayUrl = null;
     private volatile boolean busy = false;
     private String curUrl = "";
@@ -160,6 +171,16 @@ public class BtRelay extends MIDlet implements CommandListener {
             } else if (c == exitCmd) {
                 destroyApp(true);
                 notifyDestroyed();
+            }
+        } else if (d == textMenu) {
+            display.setCurrent(view);
+            if (c == List.SELECT_COMMAND) {
+                commandAction(textMenuCmds[textMenu.getSelectedIndex()], view);
+            }
+        } else if (d == remoteMenu) {
+            display.setCurrent(remote);
+            if (c == List.SELECT_COMMAND) {
+                remote.menuSelect(remoteMenu.getSelectedIndex());
             }
         } else if (d == remote) {
             remote.command(c);
@@ -305,6 +326,20 @@ public class BtRelay extends MIDlet implements CommandListener {
         }
     }
 
+    // The pages use the whole screen so the centre key reaches the app; this is the Menu softkey.
+    private void showTextMenu() {
+        textMenuCmds = new Command[]{urlCmd, searchCmd, remoteCmd, linksCmd, reloadCmd,
+                homeCmd, settingsCmd, exitCmd};
+        List l = new List("Menu", List.IMPLICIT);
+        for (int i = 0; i < textMenuCmds.length; i++) {
+            l.append(textMenuCmds[i].getLabel(), null);
+        }
+        l.addCommand(backCmd);
+        l.setCommandListener(this);
+        textMenu = l;
+        display.setCurrent(l);
+    }
+
     // ------------------------------------------------------- remote browser
 
     private void startRemote() {
@@ -385,6 +420,117 @@ public class BtRelay extends MIDlet implements CommandListener {
 
     private static String flat(String s) {
         return s.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ');
+    }
+
+    // ----------------------------------------------------------------- sound
+
+    // The Android phone records the page's sound, shrinks it to AMR and sends 10-second
+    // clips; the Nokia's own player decodes and plays them.
+
+    private void toggleSound() {
+        if (soundOn) {
+            soundOn = false;
+            stopPlayer();
+            soundAlert("Sound off");
+            return;
+        }
+        soundOn = true;
+        soundAlert("Sound on. A clip arrives about every 10 seconds.");
+        new Thread(new Runnable() {
+            public void run() {
+                soundLoop();
+            }
+        }).start();
+    }
+
+    private void soundAlert(String msg) {
+        Alert a = new Alert("Sound", msg, null, AlertType.INFO);
+        a.setTimeout(2500);
+        Displayable back = view;
+        if (remote != null) {
+            back = remote;
+        }
+        display.setCurrent(a, back);
+    }
+
+    private void soundLoop() {
+        int failures = 0;
+        while (soundOn) {
+            try {
+                byte[] r = exchange("AUD\tNEXT\t8\n", 300000, null);
+                failures = 0;
+                if (r.length == 0) {
+                    Thread.sleep(1000);
+                    continue;
+                }
+                if (r[0] == 0) {
+                    soundOn = false;
+                    soundAlert("Sound is not running on the Android phone. Press Start sound for Nokia there.");
+                    break;
+                }
+                if (r[0] == 2 && r.length > 8) {
+                    playAmr(r, 1, r.length - 1);
+                }
+            } catch (Throwable t) {
+                failures++;
+                if (failures >= 3) {
+                    soundOn = false;
+                    soundAlert("Sound stopped: connection problem");
+                    break;
+                }
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                }
+            }
+        }
+    }
+
+    private void playAmr(byte[] d, int off, int len) throws Exception {
+        synchronized (playLock) {              // wait for the clip that is still playing
+            long t0 = System.currentTimeMillis();
+            while (playing && soundOn && System.currentTimeMillis() - t0 < 30000) {
+                playLock.wait(500);
+            }
+        }
+        if (!soundOn) {
+            return;
+        }
+        stopPlayer();
+        Player p = Manager.createPlayer(new ByteArrayInputStream(d, off, len), "audio/amr");
+        p.addPlayerListener(new PlayerListener() {
+            public void playerUpdate(Player pl, String event, Object data) {
+                if (event.equals(PlayerListener.END_OF_MEDIA) || event.equals(PlayerListener.ERROR)
+                        || event.equals(PlayerListener.CLOSED)) {
+                    synchronized (playLock) {
+                        playing = false;
+                        playLock.notifyAll();
+                    }
+                }
+            }
+        });
+        p.realize();
+        p.prefetch();
+        player = p;
+        synchronized (playLock) {
+            playing = true;
+        }
+        p.start();
+    }
+
+    private void stopPlayer() {
+        Player p = player;
+        player = null;
+        synchronized (playLock) {
+            playing = false;
+            playLock.notifyAll();
+        }
+        if (p != null) {
+            try {
+                p.close();
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     // --------------------------------------------------------------- images
@@ -544,7 +690,9 @@ public class BtRelay extends MIDlet implements CommandListener {
             os.write(reqLine.getBytes("UTF-8"));
             os.flush();
 
-            view.setStatus(waitMsg);
+            if (waitMsg != null) {
+                view.setStatus(waitMsg);
+            }
             dis = conn.openDataInputStream();
             int len = dis.readInt();
             if (len < 0 || len > maxLen) {
@@ -698,6 +846,7 @@ public class BtRelay extends MIDlet implements CommandListener {
         private int lastW = -1;
 
         View() {
+            setFullScreenMode(true);
             applyStyle();
         }
 
@@ -1061,7 +1210,14 @@ public class BtRelay extends MIDlet implements CommandListener {
                 sb.append(Integer.toString(ls.size()));
                 info = sb.toString();
             }
-            g.drawString(fit(info, w - 4), 2, h - barH + 1, Graphics.TOP | Graphics.LEFT);
+            int lw = font.stringWidth("Menu");
+            int rw = font.stringWidth("Back");
+            g.drawString("Menu", 2, h - barH + 1, Graphics.TOP | Graphics.LEFT);
+            g.drawString("Back", w - rw - 2, h - barH + 1, Graphics.TOP | Graphics.LEFT);
+            if (w - lw - rw - 12 > 20) {
+                g.drawString(fit(info, w - lw - rw - 12), lw + 6, h - barH + 1,
+                        Graphics.TOP | Graphics.LEFT);
+            }
 
             g.setClip(0, areaTop, w, areaH);
             g.setColor(fg);
@@ -1088,6 +1244,18 @@ public class BtRelay extends MIDlet implements CommandListener {
         }
 
         private void handleKey(int k, boolean rep) {
+            if (k == -6) {                 // left softkey
+                if (!rep) {
+                    showTextMenu();
+                }
+                return;
+            }
+            if (k == -7) {                 // right softkey
+                if (!rep) {
+                    goBack();
+                }
+                return;
+            }
             // Centre key of the D-pad: -5 on Nokia, 10/13 on some other phones.
             if (k == -5 || k == 10 || k == 13) {
                 if (!rep) {
@@ -1247,13 +1415,12 @@ public class BtRelay extends MIDlet implements CommandListener {
 
     /** Shows the relay's screenshot, a cursor you move with the D-pad, and a status bar. */
     private class RemoteView extends Canvas {
-        private final int[] ZOOMS = {240, 320, 400, 480, 640, 800, 1024};
+        private final int[] ZOOMS = {240, 320, 400, 480, 640};
         private Image shot;
         private int cx = 100;
         private int cy = 100;
-        private int zoom = 3;
+        private int zoom = 1;
         private int pct = 0;
-        private int lastShotBytes = 0;
         private String title = "";
         String pageUrl = "";
         private String msg = "";
@@ -1274,11 +1441,9 @@ public class BtRelay extends MIDlet implements CommandListener {
         private Command rZoomOut = new Command("Zoom out", Command.SCREEN, 7);
         private Command rText = new Command("Text mode", Command.SCREEN, 8);
         private Command rBack = new Command("Back", Command.BACK, 1);
-        private Command rExit = new Command("Exit", Command.EXIT, 9);
-        private Command rClick = new Command("Click (Select)", Command.SCREEN, 1);
 
         RemoteView() {
-            addCommand(rClick);
+            setFullScreenMode(true);
             addCommand(rUrl);
             addCommand(rSearch);
             addCommand(rType);
@@ -1288,7 +1453,6 @@ public class BtRelay extends MIDlet implements CommandListener {
             addCommand(rZoomOut);
             addCommand(rText);
             addCommand(rBack);
-            addCommand(rExit);
             setCommandListener(BtRelay.this);
         }
 
@@ -1343,7 +1507,17 @@ public class BtRelay extends MIDlet implements CommandListener {
                 b.append(Integer.toString(pct)).append("% ").append(title);
                 t = b.toString();
             }
-            g.drawString(fit(t, w - 4), 2, h - bh + 1, Graphics.TOP | Graphics.LEFT);
+            if (soundOn) {
+                t = cat("[snd] ", t);
+            }
+            int lw = font.stringWidth("Menu");
+            int rw = font.stringWidth("Back");
+            g.drawString("Menu", 2, h - bh + 1, Graphics.TOP | Graphics.LEFT);
+            g.drawString("Back", w - rw - 2, h - bh + 1, Graphics.TOP | Graphics.LEFT);
+            if (w - lw - rw - 12 > 20) {
+                g.drawString(fit(t, w - lw - rw - 12), lw + 6, h - bh + 1,
+                        Graphics.TOP | Graphics.LEFT);
+            }
         }
 
         // ---- keys
@@ -1357,6 +1531,18 @@ public class BtRelay extends MIDlet implements CommandListener {
         }
 
         private void key(int k, boolean rep) {
+            if (k == -6) {                 // left softkey
+                if (!rep) {
+                    showMenu();
+                }
+                return;
+            }
+            if (k == -7) {                 // right softkey
+                if (!rep) {
+                    backAction();
+                }
+                return;
+            }
             if (k == -5 || k == 10 || k == 13 || k == KEY_NUM5) {
                 if (!rep) {
                     click();
@@ -1442,9 +1628,6 @@ public class BtRelay extends MIDlet implements CommandListener {
                 if (!rep) {
                     click();
                 }
-            } else if (!rep) {
-                msg = cat("Key ", Integer.toString(k));
-                repaint();
             }
         }
 
@@ -1469,8 +1652,6 @@ public class BtRelay extends MIDlet implements CommandListener {
 
         private void click() {
             if (working) {
-                msg = "Busy, wait...";
-                repaint();
                 return;
             }
             afterClick = true;
@@ -1510,12 +1691,7 @@ public class BtRelay extends MIDlet implements CommandListener {
         }
 
         void command(Command c) {
-            if (c == rExit) {
-                destroyApp(true);
-                notifyDestroyed();
-            } else if (c == rClick) {
-                click();
-            } else if (c == rUrl) {
+            if (c == rUrl) {
                 askRemoteUrl();
             } else if (c == rSearch) {
                 askRemoteSearch();
@@ -1532,11 +1708,59 @@ public class BtRelay extends MIDlet implements CommandListener {
             } else if (c == rText) {
                 leave();
             } else if (c == rBack) {
-                if (msg.equals("No history")) {
-                    leave();
-                } else {
-                    navigate("BACK");
-                }
+                backAction();
+            }
+        }
+
+        private void backAction() {
+            if (msg.equals("No history")) {
+                leave();             // nothing left to go back to: return to the text browser
+            } else {
+                navigate("BACK");
+            }
+        }
+
+        void showMenu() {
+            List l = new List("Remote browser", List.IMPLICIT);
+            l.append("Go to address", null);
+            l.append("Search", null);
+            l.append("Type in field", null);
+            l.append("Forward", null);
+            l.append("Reload", null);
+            l.append("Zoom in", null);
+            l.append("Zoom out", null);
+            l.append("Sound on/off", null);
+            l.append("Text mode (leave remote)", null);
+            l.append("Exit app", null);
+            l.addCommand(backCmd);
+            l.setCommandListener(BtRelay.this);
+            remoteMenu = l;
+            display.setCurrent(l);
+        }
+
+        void menuSelect(int i) {
+            if (i == 0) {
+                askRemoteUrl();
+            } else if (i == 1) {
+                askRemoteSearch();
+            } else if (i == 2) {
+                typeNow();
+            } else if (i == 3) {
+                navigate("FWD");
+            } else if (i == 4) {
+                navigate("RELOAD");
+            } else if (i == 5) {
+                zoomBy(-1);
+            } else if (i == 6) {
+                zoomBy(1);
+            } else if (i == 7) {
+                toggleSound();
+            } else if (i == 8) {
+                leave();
+            } else if (i == 9) {
+                stopPlayer();
+                destroyApp(true);
+                notifyDestroyed();
             }
         }
 
@@ -1608,11 +1832,6 @@ public class BtRelay extends MIDlet implements CommandListener {
             try {
                 byte[] d = exchange(line, 600000, "Remote browser...");
                 apply(d);
-                if (line.startsWith("RB\tSCROLL") && lastShotBytes < 2000) {
-                    Thread.sleep(500);   // page not painted yet: ask for the screen again
-                    d = exchange(rb("SHOT", null, null), 600000, "Remote browser...");
-                    apply(d);
-                }
             } catch (Throwable t) {
                 afterClick = false;
                 String e = String.valueOf(t);
@@ -1634,7 +1853,6 @@ public class BtRelay extends MIDlet implements CommandListener {
             in.readFully(mb);
             String meta = new String(mb, "UTF-8");
             int off = 4 + ml;
-            lastShotBytes = d.length - off;
             if (d.length > off) {
                 shot = Image.createImage(d, off, d.length - off);
             }
